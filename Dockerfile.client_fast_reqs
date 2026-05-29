@@ -1,10 +1,10 @@
-FROM golang:1.12
+FROM golang:1.21
 
 WORKDIR $GOPATH/src/cos518project/
 COPY . .
 
 # Dependencies
-RUN go get -d -v ./...
+RUN go mod init cos518project && go mod tidy
 
 # Build executable
 RUN go build -o bin/client_fast_reqs chubby/cmd/client_fast_reqs.go
