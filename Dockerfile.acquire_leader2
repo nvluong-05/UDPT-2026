@@ -1,0 +1,13 @@
+FROM golang:1.21
+
+WORKDIR /go/src/cos518project/
+
+COPY . .
+
+RUN go mod init cos518project && go mod tidy
+
+# Build executable
+RUN go build -o chubby/acquire_lock_client2 ./chubby/cmd/acquire_Lock_Client2.go
+
+# Run client 2
+CMD ["chubby/acquire_lock_client2"]

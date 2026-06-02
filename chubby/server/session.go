@@ -13,7 +13,7 @@ import (
 )
 
 const DefaultLeaseExt = 15 * time.Second
-const DefaultLockTTL = 30 * time.Second
+const DefaultLockTTL = 10 * time.Second
 
 // Session contains metadata for one Chubby session.
 // For simplicity, we say that each client can only init one session with
@@ -354,6 +354,7 @@ func (sess *Session) ReleaseLock(path api.FilePath) error {
 
 		// Set lock mode
 		lock.mode = api.FREE
+		lock.expireAt = time.Time{}
 
 		// Delete lock from session locks map
 		delete(sess.locks, path)
@@ -368,6 +369,8 @@ func (sess *Session) ReleaseLock(path api.FilePath) error {
 		// Set lock mode if no more owners
 		if len(lock.owners) == 0 {
 			lock.mode = api.FREE
+			lock.expireAt = time.Time{}
+
 		}
 
 		// Delete lock from session locks map
@@ -435,4 +438,30 @@ func (sess *Session) WriteContent(path api.FilePath, content string) error {
 		return errors.New(fmt.Sprintf("Write Error"))
 	}
 	return nil
+}
+func expireLockIfNeeded(lock *Lock, path api.FilePath) {
+	if lock == nil {
+		return
+	}
+
+	if lock.mode == api.FREE {
+		return
+	}
+
+	if lock.expireAt.IsZero() {
+		return
+	}
+
+	if time.Now().After(lock.expireAt) {
+		app.logger.Printf("Lock %s expired at %s. Releasing automatically.",
+			path, lock.expireAt.Format(time.RFC3339))
+
+		for clientID := range lock.owners {
+			delete(lock.owners, clientID)
+		}
+
+		lock.mode = api.FREE
+		lock.expireAt = time.Time{}
+		app.locks[path] = lock
+	}
 }
