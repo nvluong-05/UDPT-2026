@@ -13,75 +13,76 @@ import (
 )
 
 const DefaultLeaseExt = 15 * time.Second
+const DefaultLockTTL = 30 * time.Second
 
 // Session contains metadata for one Chubby session.
 // For simplicity, we say that each client can only init one session with
 // the Chubby servers.
 type Session struct {
 	// Client to which this Session corresponds.
-	clientID 		api.ClientID
+	clientID api.ClientID
 
 	// Start time
-	startTime		time.Time
+	startTime time.Time
 
 	// Length of the Lease
-	leaseLength     time.Duration
+	leaseLength time.Duration
 
 	//TTL Lock
-	ttlLock 		sync.Mutex
+	ttlLock sync.Mutex
 
 	// Channel used to block KeepAlive
-	ttlChannel  	chan struct{}
+	ttlChannel chan struct{}
 
-    // A data structure describing which locks the client holds.
-    // Maps lock filepath -> Lock struct.
-    locks           map[api.FilePath]*Lock
+	// A data structure describing which locks the client holds.
+	// Maps lock filepath -> Lock struct.
+	locks map[api.FilePath]*Lock
 
 	// Did we terminate this session?
-	terminated		bool
+	terminated bool
 
 	// Terminated channel
-	terminatedChan	chan struct{}
+	terminatedChan chan struct{}
 }
 
 // Lock describes information about a particular Chubby lock.
 type Lock struct {
-	path			api.FilePath  // The path to this lock in the store.
-	mode			api.LockMode  // api.SHARED or exclusive lock?
-	owners			map[api.ClientID]bool  // Who is holding the lock?
-	content         string                 // The content of the file
+	path    api.FilePath          // The path to this lock in the store.
+	mode    api.LockMode          // api.SHARED or exclusive lock?
+	owners  map[api.ClientID]bool // Who is holding the lock?
+	content string                // The content of the file
+
+	expireAt time.Time
 }
 
 /* Create Session struct. */
 func CreateSession(clientID api.ClientID) (*Session, error) {
 	sess, ok := app.sessions[clientID]
 
-	if ok  {
+	if ok {
 		return nil, errors.New(fmt.Sprintf("The client already has a session established with the master"))
 	}
-
-
 
 	app.logger.Printf("Creating session with client %s", clientID)
 
 	// Create new session struct.
 	sess = &Session{
-        clientID:    	clientID,
-        startTime:   	time.Now(),
-        leaseLength: 	DefaultLeaseExt,
-        ttlChannel:  	make(chan struct{}, 2),
-        locks:       	make(map[api.FilePath]*Lock),
-        terminated:	 	false,
-        terminatedChan: make(chan struct{}, 2),
-    }
+		clientID:       clientID,
+		startTime:      time.Now(),
+		leaseLength:    DefaultLeaseExt,
+		ttlChannel:     make(chan struct{}, 2),
+		locks:          make(map[api.FilePath]*Lock),
+		terminated:     false,
+		terminatedChan: make(chan struct{}, 2),
+	}
 
 	// Add the session to the sessions map.
 	app.sessions[clientID] = sess
 
 	// In a separate goroutine, periodically check if the lease is over
-    go sess.MonitorSession()
+	go sess.MonitorSession()
 
-    return sess, nil
+	return sess, nil
 }
 
 func (sess *Session) MonitorSession() {
@@ -135,14 +136,14 @@ func (sess *Session) TerminateSession() {
 }
 
 // Extend Lease after receiving keepalive messages
-func (sess *Session) KeepAlive(clientID api.ClientID) (time.Duration) {
+func (sess *Session) KeepAlive(clientID api.ClientID) time.Duration {
 	// Block until shortly before lease expires
 	select {
-	case <- sess.terminatedChan:
+	case <-sess.terminatedChan:
 		// Return early response saying that session should end.
 		return sess.leaseLength
 
-	case <- sess.ttlChannel:
+	case <-sess.ttlChannel:
 		// Extend lease by 12 seconds
 		sess.leaseLength = sess.leaseLength + DefaultLeaseExt
 
@@ -169,9 +170,9 @@ func (sess *Session) OpenLock(path api.FilePath) error {
 
 		// Add lock to in-memory struct of locks
 		lock := &Lock{
-			path: path,
-			mode: api.FREE,
-			owners: make(map[api.ClientID]bool),
+			path:    path,
+			mode:    api.FREE,
+			owners:  make(map[api.ClientID]bool),
 			content: "",
 		}
 		app.locks[path] = lock
@@ -213,7 +214,7 @@ func (sess *Session) DeleteLock(path api.FilePath) error {
 }
 
 // Try to acquire the lock, returning either success (true) or failure (false).
-func (sess *Session) TryAcquireLock (path api.FilePath, mode api.LockMode) (bool, error) {
+func (sess *Session) TryAcquireLock(path api.FilePath, mode api.LockMode) (bool, error) {
 	// Validate mode of the lock.
 	if mode != api.EXCLUSIVE && mode != api.SHARED {
 		return false, errors.New(fmt.Sprintf("Invalid mode."))
@@ -241,9 +242,9 @@ func (sess *Session) TryAcquireLock (path api.FilePath, mode api.LockMode) (bool
 		app.logger.Printf("Lock Doesn't Exist with Client ID", sess.clientID)
 
 		lock = &Lock{
-			path: path,
-			mode: api.FREE,
-			owners: make(map[api.ClientID]bool),
+			path:    path,
+			mode:    api.FREE,
+			owners:  make(map[api.ClientID]bool),
 			content: "",
 		}
 		app.locks[path] = lock
@@ -270,14 +271,18 @@ func (sess *Session) TryAcquireLock (path api.FilePath, mode api.LockMode) (bool
 		if mode == api.EXCLUSIVE {
 			app.logger.Printf("Failed to acquire lock %s in EXCLUSIVE mode: already held in SHARED mode", path)
 			return false, nil
-		} else {  // mode == api.SHARED
+		} else { // mode == api.SHARED
 			// Update lock owners
 			lock.owners[sess.clientID] = true
+			lock.expireAt = time.Now().Add(DefaultLockTTL)
 
 			// Add lock to session lock struct
 			sess.locks[path] = lock
 			app.locks[path] = lock
+			app.logger.Printf("Lock %s acquired in SHARED mode by client %s, expires at %s",
+				path, sess.clientID, lock.expireAt.Format(time.RFC3339))
 			// Return success
+
 			//app.logger.Printf("Lock %s acquired successfully with mode SHARED", path)
 			return true, nil
 		}
@@ -293,13 +298,16 @@ func (sess *Session) TryAcquireLock (path api.FilePath, mode api.LockMode) (bool
 
 		// Update lock mode
 		lock.mode = mode
+		// Update lock TTL
+		lock.expireAt = time.Now().Add(DefaultLockTTL)
 
 		// Add lock to session lock struct
 		sess.locks[path] = lock
 
 		// Update Lock Mode in the global Map
 		app.locks[path] = lock
-
+		app.logger.Printf("Lock %s acquired by client %s, mode %d, expires at %s",
+			path, sess.clientID, mode, lock.expireAt.Format(time.RFC3339))
 		// Return success
 		//if mode == api.SHARED {
 		//	app.logger.Printf("Lock %s acquired successfully with mode SHARED", path)
@@ -313,7 +321,7 @@ func (sess *Session) TryAcquireLock (path api.FilePath, mode api.LockMode) (bool
 }
 
 // Release the lock.
-func (sess *Session) ReleaseLock (path api.FilePath) (error) {
+func (sess *Session) ReleaseLock(path api.FilePath) error {
 	// Check if lock exists in persistent store
 	_, err := app.store.Get(string(path))
 
@@ -374,12 +382,12 @@ func (sess *Session) ReleaseLock (path api.FilePath) (error) {
 }
 
 // Read the Content from a lockfile
-func (sess *Session) ReadContent (path api.FilePath) (string,error) {
+func (sess *Session) ReadContent(path api.FilePath) (string, error) {
 	// Check if file exists in persistent store
 	content, err := app.store.Get(string(path))
 
 	if err != nil {
-		return "",errors.New(fmt.Sprintf("Client with id %s: File at %s does not exist in persistent store", path, sess.clientID))
+		return "", errors.New(fmt.Sprintf("Client with id %s: File at %s does not exist in persistent store", path, sess.clientID))
 	}
 
 	// Grab lock struct from session locks map.
@@ -387,20 +395,20 @@ func (sess *Session) ReadContent (path api.FilePath) (string,error) {
 
 	// If not in session locks map, throw an error
 	if !present || lock == nil {
-		return "",errors.New(fmt.Sprintf("Lock at %s does not exist in session locks map", path))
+		return "", errors.New(fmt.Sprintf("Lock at %s does not exist in session locks map", path))
 	}
 
 	// Check that we are among the owners of the lock.
 	_, present = lock.owners[sess.clientID]
 	if !present || !lock.owners[sess.clientID] {
-		return "",errors.New(fmt.Sprintf("Client %d does not own lock at path %s", sess.clientID, path))
+		return "", errors.New(fmt.Sprintf("Client %d does not own lock at path %s", sess.clientID, path))
 	}
 
 	return content, nil
 }
 
 // Write the Content to a lockfile
-func (sess *Session) WriteContent (path api.FilePath, content string) (error) {
+func (sess *Session) WriteContent(path api.FilePath, content string) error {
 	// Check if file exists in persistent store
 	_, err := app.store.Get(string(path))
 
@@ -428,4 +436,3 @@ func (sess *Session) WriteContent (path api.FilePath, content string) (error) {
 	}
 	return nil
 }
-
