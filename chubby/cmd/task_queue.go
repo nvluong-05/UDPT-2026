@@ -55,7 +55,7 @@ func runProducer(workerID string) {
 		log.Fatalf("[PRODUCER] Error opening queue lock: %v", err)
 	}
 
-	for i:= 1; i <= NUM_TASKS; i++ {
+	for i := 1; i <= NUM_TASKS; i++ {
 		taskID := fmt.Sprintf("task_%d", i)
 		lockPath := api.FilePath(TASK_LOCK_PREFIX + taskID)
 
@@ -108,7 +108,7 @@ func runProducer(workerID string) {
 	processedCount := 0
 	failedCount := 0
 
-	for int i = 1; i <= NUM_TASKS; i++ {
+	for i := 1; i <= NUM_TASKS; i++ {
 		taskID := fmt.Sprintf("task_%d", i)
 		lockPath  := api.FilePath(TASK_LOCK_PREFIX + taskID)
 
@@ -135,7 +135,7 @@ func runProducer(workerID string) {
 		if err != nil {
 			log.Printf("[WORKER-%s] Error reading task %s: %v", workerID, taskID, err)
 			sess.ReleaseLock(lockPath)
-			countinue
+			continue
 		}
 
 		var task Task
@@ -144,4 +144,5 @@ func runProducer(workerID string) {
 			sess.ReleaseLock(lockPath)
 			continue
 		}
+}
 }
