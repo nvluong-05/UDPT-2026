@@ -144,5 +144,69 @@ func runProducer(workerID string) {
 			sess.ReleaseLock(lockPath)
 			continue
 		}
-}
+
+		if task.Status != "pending" {
+			log.Printf("[WORKER-%s] Task %s is not pending (status: %s), skipping", workerID, taskID, task.Status)
+			sess.ReleaseLock(lockPath)
+			continue
+		}
+
+		task.Status = "processing"
+		task.AssignedTo = "worker_" + workerID
+		updatedJSON, _ := json.Marshal(task)
+		sess.WriteContent(lockPath, string(updatedJSON))
+
+		log.Printf("[WORKER-%s] Processing: %s, type:%s", workerID, taskID, task.Type)
+
+		processingTime := time.Duration(1+rand.Intn(3)) * time.Second
+		time.Sleep(processingTime)
+
+		task.Status = "done"
+		task.CompletedAt = time.Now()
+		doneJSON, _ := json.Marshal(task)
+		sess.WriteContent(lockPath, string(doneJSON))
+
+		log.Printf("[WORKER-%s] Completed: %s, type: %s-20s, duration: %v", workerID, taskID, task.Type, processingTime)
+
+		sess.ReleaseLock(lockPath)
+		log.Printf("[WORKER-%s] Lock released for %s", workerID, taskID)
+
+		processedCount++
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	log.Printf("[WORKER-%s] Summary: Processed %d tasks, skipped %d tasks (handled by other workers or errors)", workerID, processedCount, failedCount)
+
+	//Main function: Parses command line arguments and starts producer or worker
+	func main() {
+		var mode string 
+		var workerID string
+
+		flag.StringVar(&mode, "mode", "", "Mode to run: producer or worker")
+		flag.StringVar(&workerId, "id", "1", "Worker ID")
+		flag.Parse()
+
+		if mode == "" {
+			fmt.Println("Distributed task queue - Chubby")
+			fmt.Println("Usage:")
+			fmt.Println("    -mode producer           Create tasks into the queue")
+			fmt.Println("    -mode worker -id 1       Run worker with ID = 1")
+			os.Exit(1)
+		}
+
+		rand.Seed(time.Now().UnixNano())
+
+		quitCh := make(chan os.Signal, 1)
+		signal.Notify(quitCh, os.Kill, os.Interrupt, syscall.SIGUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+		
+		switch mode {
+			case "producer":
+				go runProducer(workerID)
+			case "worker":
+				go runWorker(workerID)
+				<-quitCh
+			default:
+				log.Fatalf("Invalid mode: %s. Use 'producer' or 'worker'", mode)	
+		}
+	}
 }
