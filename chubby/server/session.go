@@ -275,6 +275,7 @@ func (sess *Session) TryAcquireLock(path api.FilePath, mode api.LockMode) (bool,
 			// Update lock owners
 			lock.owners[sess.clientID] = true
 			lock.expireAt = time.Now().Add(DefaultLockTTL)
+			scheduleLockExpiration(path, lock.expireAt)
 
 			// Add lock to session lock struct
 			sess.locks[path] = lock
@@ -300,6 +301,7 @@ func (sess *Session) TryAcquireLock(path api.FilePath, mode api.LockMode) (bool,
 		lock.mode = mode
 		// Update lock TTL
 		lock.expireAt = time.Now().Add(DefaultLockTTL)
+		scheduleLockExpiration(path, lock.expireAt)
 
 		// Add lock to session lock struct
 		sess.locks[path] = lock
@@ -337,12 +339,20 @@ func (sess *Session) ReleaseLock(path api.FilePath) error {
 		return errors.New(fmt.Sprintf("Lock at %s does not exist in session locks map", path))
 	}
 
+	// If lock was already released by TTL, ignore duplicate release.
+	if lock.mode == api.FREE || len(lock.owners) == 0 {
+		delete(sess.locks, path)
+		app.logger.Printf("Lock %s already released before client %s release request", path, sess.clientID)
+		return nil
+	}
+
 	// Check that we are among the owners of the lock.
 	_, present = lock.owners[sess.clientID]
 	if !present || !lock.owners[sess.clientID] {
-		return errors.New(fmt.Sprintf("Client %d does not own lock at path %s", sess.clientID, path))
+		delete(sess.locks, path)
+		app.logger.Printf("Client %s no longer owns lock %s, probably released by TTL", sess.clientID, path)
+		return nil
 	}
-
 	// Switch on lock mode.
 	switch lock.mode {
 	case api.FREE:
@@ -464,4 +474,40 @@ func expireLockIfNeeded(lock *Lock, path api.FilePath) {
 		lock.expireAt = time.Time{}
 		app.locks[path] = lock
 	}
+}
+func scheduleLockExpiration(path api.FilePath, expectedExpireAt time.Time) {
+	go func() {
+		waitTime := time.Until(expectedExpireAt)
+		if waitTime > 0 {
+			time.Sleep(waitTime)
+		}
+
+		lock, exists := app.locks[path]
+		if !exists || lock == nil {
+			return
+		}
+
+		if lock.mode == api.FREE {
+			return
+		}
+
+		if lock.expireAt.IsZero() {
+			return
+		}
+
+		if !lock.expireAt.Equal(expectedExpireAt) {
+			return
+		}
+
+		app.logger.Printf("Lock %s TTL expired at %s. Releasing automatically.",
+			path, lock.expireAt.Format(time.RFC3339))
+
+		for clientID := range lock.owners {
+			delete(lock.owners, clientID)
+		}
+
+		lock.mode = api.FREE
+		lock.expireAt = time.Time{}
+		app.locks[path] = lock
+	}()
 }
