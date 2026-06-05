@@ -10,6 +10,6 @@ RUN go mod init cos518project && go mod tidy
 RUN go build -o bin/task_queue chubby/cmd/task_queue.go
 
 # Default CMD (overridden by docker-compose args)
-ARG MODE=worker
-ARG ID=1
+ENV MODE=worker
+ENV ID=1
 CMD bin/task_queue -mode $MODE -id $ID
