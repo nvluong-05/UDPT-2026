@@ -51,9 +51,9 @@ services:
         build:
             context: .
             dockerfile: Dockerfile.taskqueue
-            args:
-                MODE: producer
-                ID: "0"
+        environment:
+            - MODE=producer
+            - ID=0
         restart: "no"
         depends_on:
             - "node1"
@@ -63,14 +63,15 @@ services:
             - "node5"
         networks:
             static-network:
-                ipv4_address: 172.20.128.10
+              ipv4_address: 172.20.128.10
+
     task_worker1:
         build:
             context: .
             dockerfile: Dockerfile.taskqueue
-            args:
-                MODE: worker
-                ID: "1"
+        environment:
+            - MODE=worker
+            - ID=1
         restart: "no"
         depends_on:
             - "node1"
@@ -85,9 +86,9 @@ services:
         build:
             context: .
             dockerfile: Dockerfile.taskqueue
-            args:
-                MODE: worker
-                ID: "2"
+        environment:
+            - MODE=worker
+            - ID=2
         restart: "no"
         depends_on:
             - "node1"
@@ -102,9 +103,9 @@ services:
         build:
             context: .
             dockerfile: Dockerfile.taskqueue
-            args:
-                MODE: worker
-                ID: "3"
+        environment:
+            - MODE=worker
+            - ID=3
         restart: "no"
         depends_on:
             - "node1"
